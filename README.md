@@ -86,6 +86,11 @@ Preview the production build:
 npm run preview
 ```
 
+### Demo
+```
+https://github.com/user-attachments/assets/c32db315-4f42-4b33-8c59-b4c4fb6e097e
+```
+
 ### Using the Application
 
 1. Click the "Open documents" button
