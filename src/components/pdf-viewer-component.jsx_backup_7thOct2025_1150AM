@@ -1,0 +1,313 @@
+// src/components/pdf-viewer-component.jsx
+import { useEffect, useRef, useState } from "react";
+
+// Global array to store signature info + filename
+const signatureData = [];
+
+export default function PdfViewerComponent(props) {
+  const containerRef = useRef(null);
+  const [loading, setLoading] = useState(false);
+  const [results, setResults] = useState([]);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    const { NutrientViewer } = window;
+
+    if (
+      !container ||
+      !NutrientViewer ||
+      !props.documents ||
+      props.documents.length === 0
+    ) {
+      return;
+    }
+
+    async function loadDocuments() {
+      setLoading(true);
+      const tempResults = [];
+
+      for (let i = 0; i < props.documents.length; i++) {
+        const doc = props.documents[i];
+        const filename = doc.filename;
+        const documentUrl = doc.url;
+
+        try {
+          console.log(
+            `Loading document ${i + 1}/${props.documents.length}: ${filename}`,
+          );
+
+          // Load the document in headless mode with trustedCAsCallback
+          const instance = await NutrientViewer.load({
+            //licenseKey: import.meta.env.VITE_lkey,
+            container,
+            document: documentUrl,
+            headless: true, // No UI
+            // Callback to load trusted certificates for signature validation
+            trustedCAsCallback: async () => {
+              try {
+                const response = await fetch(
+                  "http://localhost:5502/api/Certificate",
+                  //"https://localhost:7118/api/Certificate/certificates",
+                  {
+                    method: "GET",
+                    headers: {
+                      Accept: "application/json",
+                    },
+                  },
+                );
+
+                if (!response.ok) {
+                  throw new Error(
+                    `HTTP ${response.status}: ${response.statusText}`,
+                  );
+                }
+
+                const data = await response.json();
+
+                if (
+                  !data ||
+                  !data.certificates ||
+                  !Array.isArray(data.certificates)
+                ) {
+                  throw new Error(
+                    "Invalid certificate data format received from API",
+                  );
+                }
+
+                if (data.certificates.length === 0) {
+                  return [];
+                }
+
+                // Convert byte arrays to ArrayBuffers as its fetched from C#.NET API
+                // Resulting array contains ArrayBuffers for each certificate
+                const arrayBuffers = data.certificates.map(
+                  (certBytes, index) => {
+                    // Handle different data formats
+                    let bytes;
+
+                    if (Array.isArray(certBytes)) {
+                      // Already an array of bytes
+                      bytes = certBytes;
+                    } else if (typeof certBytes === "string") {
+                      // Base64 encoded string
+                      const binaryString = atob(certBytes);
+                      bytes = new Uint8Array(binaryString.length);
+                      for (let i = 0; i < binaryString.length; i++) {
+                        bytes[i] = binaryString.charCodeAt(i);
+                      }
+                    } else if (
+                      certBytes &&
+                      typeof certBytes === "object" &&
+                      certBytes.length !== undefined
+                    ) {
+                      // Array-like object, convert to array
+                      bytes = Array.from(certBytes);
+                    } else {
+                      throw new Error(
+                        `Invalid certificate data format for certificate ${index + 1}`,
+                      );
+                    }
+
+                    const buffer = new ArrayBuffer(bytes.length);
+                    const view = new Uint8Array(buffer);
+                    for (let i = 0; i < bytes.length; i++) {
+                      view[i] = bytes[i];
+                    }
+                    return buffer;
+                  },
+                );
+
+                return arrayBuffers;
+              } catch (error) {
+                console.warn("Failed to load trusted certificates:", error);
+                // Continue without trusted certificates if loading fails
+                return [];
+              }
+            },
+          });
+
+          console.log(`Document loaded: ${filename}`);
+
+          // Extract all signature & validation info
+          const signatureInfo = await instance.getSignaturesInfo();
+          console.log(
+            `Signature info extracted for ${filename}:`,
+            signatureInfo,
+          );
+
+          // Store both filename and signatures data in global array
+          const dataEntry = { filename, signatureInfo };
+          tempResults.push(dataEntry);
+          signatureData.push(dataEntry);
+
+          // Unload/clear the viewer instance before next iteration
+          try {
+            if (instance.dispose) {
+              await instance.dispose();
+            } else if (instance.destroy) {
+              await instance.destroy();
+            } else {
+              await NutrientViewer.unload(container);
+            }
+          } catch (unloadError) {
+            console.warn(
+              `Error unloading instance for ${filename}:`,
+              unloadError,
+            );
+          }
+
+          // Clear the mounting div
+          if (container) {
+            container.innerHTML = "";
+          }
+        } catch (error) {
+          console.error(`Failed to load ${filename}:`, error);
+
+          // Store error info
+          tempResults.push({
+            filename,
+            error: error.message || "Unknown error",
+          });
+
+          // Always clear container to resolve repeated load errors
+          if (container) {
+            container.innerHTML = "";
+          }
+
+          // Try to unload any stuck instance
+          try {
+            await NutrientViewer.unload(container);
+          } catch {
+            // Ignore unload errors
+          }
+        }
+      }
+
+      setResults(tempResults);
+      setLoading(false);
+      console.log("All documents processed. Signature data:", signatureData);
+    }
+
+    loadDocuments();
+
+    return () => {
+      // Cleanup on unmount
+      if (NutrientViewer && container) {
+        try {
+          NutrientViewer.unload(container);
+        } catch {
+          // Ignore errors during cleanup
+        }
+      }
+    };
+  }, [props.documents]);
+
+  return (
+    <div style={{ width: "100%", height: "100vh" }}>
+      {/* Hidden container for headless mode */}
+      <div ref={containerRef} style={{ display: "none" }} />
+
+      {/* Results display */}
+      <div style={{ padding: "20px", overflowY: "auto", height: "100%" }}>
+        <h2>Document Signature Analysis</h2>
+
+        {loading && <p>Processing documents... Please wait.</p>}
+
+        {!loading && results.length > 0 && (
+          <div>
+            <h3>Results ({results.length} documents processed)</h3>
+
+            {/* Tabular format */}
+            <table
+              style={{
+                width: "100%",
+                borderCollapse: "collapse",
+                marginTop: "20px",
+              }}
+            >
+              <thead>
+                <tr
+                  style={{
+                    backgroundColor: "#f0f0f0",
+                    borderBottom: "2px solid #ccc",
+                  }}
+                >
+                  <th
+                    style={{
+                      padding: "10px",
+                      textAlign: "left",
+                      border: "1px solid #ccc",
+                    }}
+                  >
+                    Filename
+                  </th>
+                  <th
+                    style={{
+                      padding: "10px",
+                      textAlign: "left",
+                      border: "1px solid #ccc",
+                    }}
+                  >
+                    Signature Details
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {results.map((result) => {
+                  return (
+                    <tr
+                      key={result.filename}
+                      style={{
+                        borderBottom: "1px solid #ddd",
+                        textAlign: "left",
+                      }}
+                    >
+                      <td
+                        style={{
+                          padding: "10px",
+                          border: "1px solid #ccc",
+                          fontWeight: "bold",
+                          verticalAlign: "middle",
+                        }}
+                      >
+                        {result.filename}
+                      </td>
+                      <td style={{ padding: "10px", border: "1px solid #ccc" }}>
+                        {result.error ? (
+                          <span style={{ color: "red" }}>{result.error}</span>
+                        ) : (
+                          <details>
+                            <summary
+                              style={{ cursor: "pointer", color: "#0066cc" }}
+                            >
+                              View Details
+                            </summary>
+                            <pre
+                              style={{
+                                background: "#f5f5f5",
+                                padding: "10px",
+                                overflow: "auto",
+                                marginTop: "10px",
+                                fontSize: "12px",
+                                maxHeight: "400px",
+                              }}
+                            >
+                              {JSON.stringify(result.signatureInfo, null, 2)}
+                            </pre>
+                          </details>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Access signatureData via: import PdfViewerComponent from './pdf-viewer-component.jsx'; then PdfViewerComponent.signatureData
+PdfViewerComponent.signatureData = signatureData;
